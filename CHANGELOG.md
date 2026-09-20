@@ -6,6 +6,11 @@ All notable changes to this crate are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `merge` example: bursts of messages from the same user are merged before
+  judgment, and the ledger shows the lineage of the merged event.
+
 ## [0.1.0] - 2026-09-21
 
 ### Added

@@ -44,6 +44,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 name = "stream"
 required-features = ["jev"]
 
+[[example]]
+name = "merge"
+required-features = ["jev"]
+
 [lints.rust]
 missing_docs = "deny"
 unsafe_code = "forbid"
