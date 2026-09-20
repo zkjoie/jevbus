@@ -14,6 +14,9 @@ use crate::probability::Probability;
 use crate::question::{Answer, AnswerSet, Question, QuestionName, QuestionSet};
 
 /// A System One request body.
+///
+/// Borrows the payload and questions it was encoded from; a
+/// [`super::SystemOne`] implementation serialises it as JSON.
 #[derive(Debug, Serialize)]
 pub struct Request<'a> {
     model: &'a str,

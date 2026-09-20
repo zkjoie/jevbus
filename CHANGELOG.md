@@ -6,6 +6,15 @@ All notable changes to this crate are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Jev's protocol is a trait: `jev::SystemOne` (`ask :: Request -> Either
+  JudgeError Response`). `JevJudge<P>` is generic over it, so a gateway,
+  another vendor speaking the same protocol, or a test double plugs in
+  without the network stack. The HTTPS implementation moved to
+  `jev::http::HttpSystemOne`; `JevJudge::from_env()` and `::new(key)` are
+  unchanged. The `jev` feature now gates only the HTTPS code.
+
 ### Added
 
 - Answer cache: `Cached<J, C>` judge decorator, `Cache` trait for external

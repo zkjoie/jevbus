@@ -48,8 +48,9 @@
 //!   [`AnswerSet`] back to [`Verdict`]s. No IO, no time, no channels.
 //! * Boundaries: [`Judge`] and [`Ledger`] are traits; consumers are streams.
 //!   The [`Bus`] is generic over the judge and the ledger.
-//! * Adapters: [`jev`] implements [`Judge`] over TypeSafe AI's HTTP API and
-//!   is the only module that performs network IO.
+//! * Protocol: [`jev::SystemOne`] is Jev's request/response protocol as a
+//!   trait, and [`jev::JevJudge`] makes any implementation a [`Judge`].
+//!   [`jev::http`] is the HTTPS implementation and the only network code.
 
 pub mod breaker;
 pub mod bus;
@@ -66,7 +67,6 @@ pub mod routing;
 pub mod subscription;
 pub mod time;
 
-#[cfg(feature = "jev")]
 pub mod jev;
 
 pub use breaker::{Breaker, BreakerPolicy, Shared};
