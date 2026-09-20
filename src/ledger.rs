@@ -9,6 +9,7 @@ use crate::judge::JudgeError;
 use crate::lifecycle::EventState;
 use crate::probability::Probability;
 use crate::routing::RoutingError;
+use crate::source::AckError;
 use crate::subscription::{Disposition, SubscriptionId};
 
 /// What happened after a disposition was chosen.
@@ -24,8 +25,10 @@ pub enum Outcome {
     Unreviewed,
     /// The subscriber (or reviewer) stream had been dropped.
     Unsubscribed,
-    /// The event failed and no dead-letter stream was taken.
+    /// The event failed and no dead-letter sink was registered.
     Unhandled,
+    /// The sink refused the item for a reason other than being closed.
+    SinkFailed,
 }
 
 /// Why an event received no verdicts at all.
@@ -60,10 +63,15 @@ pub enum Entry {
     },
     /// The event moved to a new lifecycle state.
     Lifecycle(EventState),
-    /// The event was offered to the dead-letter stream.
+    /// The event was offered to the dead-letter sink.
     DeadLettered {
         /// Whether anyone took it.
         outcome: Outcome,
+    },
+    /// The source was told the event is fully handled.
+    Acknowledged {
+        /// Whether the source accepted the acknowledgement.
+        result: Result<(), AckError>,
     },
 }
 

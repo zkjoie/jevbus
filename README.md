@@ -51,6 +51,26 @@ Thresholds are policy, not model: changing them never needs a new judgment.
 * Dropping a `Subscriber` unsubscribes; later matches are recorded as
   `Outcome::Unsubscribed`.
 
+## Ingress and egress
+
+The bus ships traits and an in-process channel, no broker code:
+
+```rust
+#[async_trait] pub trait Source: Send { type Ack: Ack; async fn next(&mut self) -> Result<Option<Envelope<Self::Ack>>, SourceError>; }
+#[async_trait] pub trait Ack: Send { async fn ack(self) -> Result<(), AckError>; }
+#[async_trait] pub trait Sink<T>: Send + Sync { async fn publish(&self, item: T) -> Result<(), SinkError>; }
+```
+
+* `bus.run(stream)` for events that need no acknowledgement,
+  `bus.run_acked(stream_of_envelopes)` or `bus.run_source(source)` for
+  ones that do. The bus acks after the event's final ledger row, in input
+  order, so delivery is at least once and a crash mid-flight leads to
+  redelivery, not loss.
+* `subscribe(sub)` returns the in-process `Subscriber` stream;
+  `subscribe_to(sub, sink)` sends to any `Sink<Delivery>`. Likewise
+  `dead_letters()` and `dead_letters_to(sink)`.
+* `ack` takes the handle by value: acknowledging twice does not compile.
+
 ## Merging events
 
 `merge::windowed` is an asynchronous stage placed in front of the bus:

@@ -1,18 +1,20 @@
-//! The bus: an event stream in, per-subscription delivery streams out.
+//! The bus: events in through a stream or a [`Source`], deliveries out
+//! through [`Sink`]s.
 
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
-use futures::{future, SinkExt, Stream, StreamExt};
+use futures::{future, stream, Stream, StreamExt};
 
 use crate::breaker::{BreakerPolicy, Shared, Transient};
-use crate::delivery::{self, DeadLetter, DeadLetters, Delivery, Sender, Subscriber};
-use crate::event::Event;
+use crate::delivery::{self, DeadLetter, DeadLetters, Delivery, Subscriber};
 use crate::judge::{Judge, JudgeError};
 use crate::ledger::{Entry, Ledger, LedgerError, Outcome, Record};
 use crate::lifecycle::{Failed, Judged, Recorded, RetryPolicy, Tracked};
 use crate::question::QuestionSet;
 use crate::routing::{self, Policy, Verdict};
+use crate::sink::{ChannelSink, Sink, SinkError};
+use crate::source::{Ack, Envelope, Source, SourceError};
 use crate::subscription::{Disposition, Subscription, SubscriptionId};
 use crate::time::{self, Sleeper};
 
@@ -24,7 +26,8 @@ pub struct BusConfig {
     /// How many judge requests may be in flight at once. Output order is the
     /// input order regardless of this value.
     pub concurrency: NonZeroUsize,
-    /// Deliveries that may wait unread per subscriber before the bus blocks.
+    /// Deliveries that may wait unread per in-process subscriber before the
+    /// bus blocks.
     pub channel_capacity: usize,
     /// Retry, backoff and timeout for judge calls.
     pub retry: RetryPolicy,
@@ -53,46 +56,46 @@ pub enum SubscribeError {
         /// The clashing id.
         id: SubscriptionId,
     },
-    /// The dead-letter stream was already taken.
-    #[error("dead-letter stream already taken")]
+    /// A dead-letter sink was already registered.
+    #[error("dead-letter sink already registered")]
     DeadLettersTaken,
 }
 
-/// The bus stopped before the input stream ended.
+/// The bus stopped before the input ended.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RunError {
     /// A record could not be written. See [`Ledger`].
     #[error(transparent)]
     Ledger(#[from] LedgerError),
+    /// The source failed. See [`SourceError`].
+    #[error(transparent)]
+    Source(#[from] SourceError),
     /// A judge call panicked while holding the breaker lock.
     #[error("breaker lock poisoned")]
     BreakerPoisoned,
 }
 
+/// Where one subscription's deliveries go.
+type DeliverySink = Box<dyn Sink<Delivery>>;
+
 struct Route {
     subscription: Subscription,
-    deliver: Sender<Delivery>,
-    review: Option<Sender<Delivery>>,
+    deliver: DeliverySink,
+    review: Option<DeliverySink>,
 }
 
 /// A streaming event bus.
 ///
-/// Register subscriptions, then call [`Bus::run`] with the input stream. The
-/// bus consumes itself so that no subscription can be added mid-run; the
-/// question set is fixed for the run's lifetime.
+/// Register subscriptions, then call one of the `run` methods with the
+/// input. The bus consumes itself so that no subscription can be added
+/// mid-run; the question set is fixed for the run's lifetime.
 pub struct Bus<J, L, S> {
     judge: J,
     ledger: L,
     sleeper: S,
     config: BusConfig,
     routes: Vec<Route>,
-    dead_letters: DeadLetterSlot,
-}
-
-/// Whether the dead-letter stream has been handed out.
-enum DeadLetterSlot {
-    Untaken,
-    Taken(Sender<DeadLetter>),
+    dead_letters: Option<Box<dyn Sink<DeadLetter>>>,
 }
 
 impl<J: Judge, L: Ledger, S: Sleeper> Bus<J, L, S> {
@@ -104,56 +107,90 @@ impl<J: Judge, L: Ledger, S: Sleeper> Bus<J, L, S> {
             sleeper,
             config,
             routes: Vec::new(),
-            dead_letters: DeadLetterSlot::Untaken,
+            dead_letters: None,
         }
     }
 
-    /// Registers a subscription and returns its delivery stream.
+    /// Registers a subscription and returns its in-process delivery stream.
     ///
     /// Events that fall in the review band are recorded as
     /// [`Outcome::Unreviewed`] and not delivered.
     pub fn subscribe(&mut self, subscription: Subscription) -> Result<Subscriber, SubscribeError> {
-        self.check_unique(subscription.id())?;
-        let (deliver, subscriber) = delivery::channel(self.config.channel_capacity);
-        self.routes.push(Route {
-            subscription,
-            deliver,
-            review: None,
-        });
+        let (sender, subscriber) = delivery::channel(self.config.channel_capacity);
+        self.subscribe_to(subscription, ChannelSink::new(sender))?;
         Ok(subscriber)
     }
 
-    /// Registers a subscription with a separate review stream.
+    /// Registers a subscription with a separate in-process review stream.
     ///
     /// Returns `(deliveries, reviews)`.
     pub fn subscribe_with_review(
         &mut self,
         subscription: Subscription,
     ) -> Result<(Subscriber, Subscriber), SubscribeError> {
-        self.check_unique(subscription.id())?;
         let (deliver, subscriber) = delivery::channel(self.config.channel_capacity);
         let (review, reviewer) = delivery::channel(self.config.channel_capacity);
-        self.routes.push(Route {
+        self.subscribe_with_review_to(
             subscription,
-            deliver,
-            review: Some(review),
-        });
+            ChannelSink::new(deliver),
+            ChannelSink::new(review),
+        )?;
         Ok((subscriber, reviewer))
     }
 
-    /// Takes the stream of events the bus gives up on. May be called once.
+    /// Registers a subscription whose deliveries go to `sink`.
+    pub fn subscribe_to(
+        &mut self,
+        subscription: Subscription,
+        sink: impl Sink<Delivery> + 'static,
+    ) -> Result<(), SubscribeError> {
+        self.check_unique(subscription.id())?;
+        self.routes.push(Route {
+            subscription,
+            deliver: Box::new(sink),
+            review: None,
+        });
+        Ok(())
+    }
+
+    /// Registers a subscription whose deliveries go to `sink` and whose
+    /// review-band events go to `reviewer`.
+    pub fn subscribe_with_review_to(
+        &mut self,
+        subscription: Subscription,
+        sink: impl Sink<Delivery> + 'static,
+        reviewer: impl Sink<Delivery> + 'static,
+    ) -> Result<(), SubscribeError> {
+        self.check_unique(subscription.id())?;
+        self.routes.push(Route {
+            subscription,
+            deliver: Box::new(sink),
+            review: Some(Box::new(reviewer)),
+        });
+        Ok(())
+    }
+
+    /// Takes the in-process stream of events the bus gives up on. May be
+    /// called once, and not together with [`Bus::dead_letters_to`].
     ///
-    /// Without it, failed events are still recorded in the ledger as
-    /// [`Outcome::Unhandled`].
+    /// Without a dead-letter sink, failed events are still recorded in the
+    /// ledger as [`Outcome::Unhandled`].
     pub fn dead_letters(&mut self) -> Result<DeadLetters, SubscribeError> {
-        match self.dead_letters {
-            DeadLetterSlot::Taken(_) => Err(SubscribeError::DeadLettersTaken),
-            DeadLetterSlot::Untaken => {
-                let (sender, receiver) = delivery::channel(self.config.channel_capacity);
-                self.dead_letters = DeadLetterSlot::Taken(sender);
-                Ok(receiver)
-            }
+        let (sender, receiver) = delivery::channel(self.config.channel_capacity);
+        self.dead_letters_to(ChannelSink::new(sender))?;
+        Ok(receiver)
+    }
+
+    /// Sends events the bus gives up on to `sink`. May be called once.
+    pub fn dead_letters_to(
+        &mut self,
+        sink: impl Sink<DeadLetter> + 'static,
+    ) -> Result<(), SubscribeError> {
+        if self.dead_letters.is_some() {
+            return Err(SubscribeError::DeadLettersTaken);
         }
+        self.dead_letters = Some(Box::new(sink));
+        Ok(())
     }
 
     /// The registered subscriptions in registration order.
@@ -169,16 +206,52 @@ impl<J: Judge, L: Ledger, S: Sleeper> Bus<J, L, S> {
         }
     }
 
-    /// Drives `events` through the judge to the subscribers until the stream
-    /// ends.
+    /// Drives a stream of events that need no acknowledgement.
     ///
-    /// With no subscriptions the bus returns at once without reading the
-    /// stream. Judge failures are retried per [`RetryPolicy`], gated by the
-    /// breaker, and finally dead-lettered; they never stop the run. Only a
-    /// ledger failure, or a poisoned breaker lock, does.
+    /// See [`Bus::run_acked`] for the guarantees.
     pub async fn run<E>(self, events: E) -> Result<(), RunError>
     where
-        E: Stream<Item = Event>,
+        E: Stream<Item = crate::event::Event>,
+    {
+        self.run_acked(events.map(Envelope::unacked)).await
+    }
+
+    /// Pulls from a [`Source`] until it is exhausted or fails.
+    pub async fn run_source<R: Source>(self, mut source: R) -> Result<(), RunError> {
+        let envelopes = stream::unfold((&mut source, false), |(source, done)| async move {
+            if done {
+                return None;
+            }
+            match source.next().await {
+                Ok(Some(envelope)) => Some((Ok(envelope), (source, false))),
+                Ok(None) => None,
+                Err(error) => Some((Err(error), (source, true))),
+            }
+        });
+        self.run_fallible(envelopes).await
+    }
+
+    /// Drives a stream of envelopes, acknowledging each after its final
+    /// ledger row.
+    ///
+    /// With no subscriptions the bus returns at once without reading the
+    /// input. Judge failures are retried per [`RetryPolicy`], gated by the
+    /// breaker, and finally dead-lettered; they never stop the run. Only a
+    /// ledger failure, a source failure or a poisoned breaker lock does.
+    /// Events are acknowledged in input order; an envelope the run never
+    /// reaches is never acknowledged.
+    pub async fn run_acked<A, E>(self, envelopes: E) -> Result<(), RunError>
+    where
+        A: Ack,
+        E: Stream<Item = Envelope<A>>,
+    {
+        self.run_fallible(envelopes.map(Ok)).await
+    }
+
+    async fn run_fallible<A, E>(self, envelopes: E) -> Result<(), RunError>
+    where
+        A: Ack,
+        E: Stream<Item = Result<Envelope<A>, SourceError>>,
     {
         let Bus {
             judge,
@@ -201,20 +274,36 @@ impl<J: Judge, L: Ledger, S: Sleeper> Bus<J, L, S> {
             questions: &questions,
             breaker: &breaker,
         };
-        let judged = events
-            .map(|event| judge_resiliently(&cx, event))
+        let judged = envelopes
+            .map(|envelope| async {
+                let (event, ack) = envelope?.into_parts();
+                let phase = judge_resiliently(&cx, event).await?;
+                Ok::<_, RunError>((phase, ack))
+            })
             .buffered(config.concurrency.get());
         futures::pin_mut!(judged);
-        while let Some(judged) = judged.next().await {
-            let judged = judged?;
+        while let Some(next) = judged.next().await {
+            let (phase, ack) = next?;
+            let event = Arc::clone(match &phase {
+                Ok(judged) => judged.event(),
+                Err(failed) => failed.event(),
+            });
             dispatch(
                 &ledger,
                 config.policy,
                 &mut routes,
                 &mut dead_letters,
-                judged,
+                phase,
             )
             .await?;
+            ledger
+                .record(Record {
+                    event: event.id().clone(),
+                    entry: Entry::Acknowledged {
+                        result: ack.ack().await,
+                    },
+                })
+                .await?;
         }
         Ok(())
     }
@@ -241,7 +330,7 @@ type JudgePhase = Result<Tracked<Judged>, Tracked<Failed>>;
 /// recording.
 async fn judge_resiliently<J: Judge, L: Ledger, S: Sleeper>(
     cx: &JudgeContext<'_, J, L, S>,
-    event: Event,
+    event: crate::event::Event,
 ) -> Result<JudgePhase, RunError> {
     let event = Arc::new(event);
     if event.is_composite() {
@@ -319,7 +408,7 @@ async fn dispatch<L: Ledger>(
     ledger: &L,
     policy: Policy,
     routes: &mut [Route],
-    dead_letters: &mut DeadLetterSlot,
+    dead_letters: &mut Option<Box<dyn Sink<DeadLetter>>>,
     phase: JudgePhase,
 ) -> Result<(), RunError> {
     let routed = match phase
@@ -331,7 +420,7 @@ async fn dispatch<L: Ledger>(
     let event = Arc::clone(routed.event());
     // `decide` guarantees one verdict per route, in route order.
     let sends = routes
-        .iter_mut()
+        .iter()
         .zip(routed.verdicts())
         .map(|(route, verdict)| send(route, Arc::clone(&event), verdict));
     let outcomes = future::join_all(sends).await;
@@ -353,20 +442,18 @@ async fn dispatch<L: Ledger>(
 
 async fn dead_letter<L: Ledger>(
     ledger: &L,
-    slot: &mut DeadLetterSlot,
+    sink: &mut Option<Box<dyn Sink<DeadLetter>>>,
     failed: Tracked<Failed>,
 ) -> Result<(), RunError> {
     record(ledger, &failed).await?;
     let (event, attempts, cause) = failed.into_parts();
-    let outcome = match slot {
-        DeadLetterSlot::Untaken => Outcome::Unhandled,
-        DeadLetterSlot::Taken(sender) => match sender
-            .send(DeadLetter::new(Arc::clone(&event), attempts, cause))
-            .await
-        {
-            Ok(()) => Outcome::Delivered,
-            Err(_disconnected) => Outcome::Unsubscribed,
-        },
+    let outcome = match sink {
+        None => Outcome::Unhandled,
+        Some(sink) => outcome_of(
+            sink.publish(DeadLetter::new(Arc::clone(&event), attempts, cause))
+                .await,
+            Outcome::Delivered,
+        ),
     };
     ledger
         .record(Record {
@@ -378,16 +465,16 @@ async fn dead_letter<L: Ledger>(
 }
 
 async fn send<'v>(
-    route: &mut Route,
-    event: Arc<Event>,
+    route: &Route,
+    event: Arc<crate::event::Event>,
     verdict: &'v Verdict,
 ) -> (&'v Verdict, Outcome) {
     let outcome = match verdict.disposition {
         Disposition::Drop => Outcome::Dropped,
         Disposition::Deliver => {
-            offer(&mut route.deliver, &event, verdict, Outcome::Delivered).await
+            offer(route.deliver.as_ref(), &event, verdict, Outcome::Delivered).await
         }
-        Disposition::Review => match route.review.as_mut() {
+        Disposition::Review => match route.review.as_deref() {
             Some(reviewer) => offer(reviewer, &event, verdict, Outcome::Reviewed).await,
             None => Outcome::Unreviewed,
         },
@@ -396,16 +483,23 @@ async fn send<'v>(
 }
 
 async fn offer(
-    sender: &mut Sender<Delivery>,
-    event: &Arc<Event>,
+    sink: &dyn Sink<Delivery>,
+    event: &Arc<crate::event::Event>,
     verdict: &Verdict,
     on_success: Outcome,
 ) -> Outcome {
-    match sender
-        .send(Delivery::new(Arc::clone(event), verdict.clone()))
-        .await
-    {
+    outcome_of(
+        sink.publish(Delivery::new(Arc::clone(event), verdict.clone()))
+            .await,
+        on_success,
+    )
+}
+
+/// Maps a sink's answer to the ledger's vocabulary.
+fn outcome_of(result: Result<(), SinkError>, on_success: Outcome) -> Outcome {
+    match result {
         Ok(()) => on_success,
-        Err(_disconnected) => Outcome::Unsubscribed,
+        Err(SinkError::Closed) => Outcome::Unsubscribed,
+        Err(SinkError::Unavailable { .. }) => Outcome::SinkFailed,
     }
 }

@@ -13,6 +13,16 @@
 //! Judge calls for consecutive events are pipelined with bounded concurrency,
 //! and output order equals input order.
 //!
+//! # Ingress and egress
+//!
+//! Events enter through a `Stream<Item = Event>`, a `Stream<Item =
+//! Envelope<A>>` carrying an [`Ack`] handle, or a pull-based [`Source`].
+//! They leave through a [`Sink`]: the in-process [`Subscriber`] channel, or
+//! any implementation of the trait. The bus acknowledges an envelope only
+//! after its final ledger row, so delivery is at least once. This crate
+//! ships the traits and the in-process channel; broker implementations live
+//! outside it.
+//!
 //! # Merging events
 //!
 //! [`merge::windowed`] is an asynchronous stage placed before the bus: it
@@ -64,6 +74,8 @@ pub mod merge;
 pub mod probability;
 pub mod question;
 pub mod routing;
+pub mod sink;
+pub mod source;
 pub mod subscription;
 pub mod time;
 
@@ -81,6 +93,8 @@ pub use merge::{CombineError, Combiner, ConcatByKey, MergeFailure, WindowPolicy}
 pub use probability::{Probability, ProbabilityError};
 pub use question::{Answer, AnswerSet, Question, QuestionName, QuestionSet};
 pub use routing::{Policy, RoutingError, Verdict};
+pub use sink::{Sink, SinkError};
+pub use source::{Ack, AckError, Envelope, NoAck, Source, SourceError};
 pub use subscription::{Disposition, Subscription, SubscriptionId, ThresholdError, Thresholds};
 pub use time::{Clock, Sleeper, SystemClock};
 #[cfg(feature = "tokio")]

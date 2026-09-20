@@ -17,6 +17,12 @@ All notable changes to this crate are documented here. The format follows
 
 ### Added
 
+- Ingress and egress traits, no broker code: `Source` (pull-based, with a
+  consume-once `Ack` handle in an `Envelope`), `Sink<T>` for deliveries and
+  dead letters. `Bus::run_source`, `Bus::run_acked`, `subscribe_to`,
+  `subscribe_with_review_to` and `dead_letters_to`. The bus acknowledges an
+  envelope after its final ledger row (`Acknowledged` entry), so delivery is
+  at least once. `Outcome::SinkFailed` for a sink that is down.
 - Answer cache: `Cached<J, C>` judge decorator, `Cache` trait for external
   backends, in-process `MemoryLru`, `Ttl` (default 24 h), `CacheKey` digest of
   payload and question set, hit/miss/fault `CacheStats`.

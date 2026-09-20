@@ -135,6 +135,7 @@ fn states(ledger: &MemoryLedger, id: &str) -> Vec<String> {
             Entry::Routed { outcome, .. } => format!("routed:{outcome:?}").to_lowercase(),
             Entry::DeadLettered { outcome } => format!("dead:{outcome:?}").to_lowercase(),
             Entry::Composed { parts } => format!("composed{}", parts.len()),
+            Entry::Acknowledged { result } => format!("ack:{}", result.is_ok()),
         })
         .collect()
 }
@@ -162,7 +163,8 @@ async fn transient_failures_are_retried_with_backoff_and_the_event_is_delivered(
             "judging3",
             "judged",
             "routed:delivered",
-            "settled"
+            "settled",
+            "ack:true"
         ]
     );
     // 100ms + 200ms of backoff elapsed on the paused clock.
@@ -206,7 +208,8 @@ async fn exhausted_attempts_dead_letter_the_event_with_its_attempt_count() {
             "retrying2",
             "judging3",
             "failed3",
-            "dead:delivered"
+            "dead:delivered",
+            "ack:true"
         ]
     );
 }
@@ -224,7 +227,7 @@ async fn permanent_failure_dead_letters_at_once_without_retry() {
     assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         states(&ledger, "e1"),
-        ["judging1", "failed1", "dead:unhandled"]
+        ["judging1", "failed1", "dead:unhandled", "ack:true"]
     );
 }
 
@@ -278,7 +281,13 @@ async fn open_breaker_makes_later_events_wait_instead_of_spending_attempts() {
     assert_eq!(judge.calls.load(Ordering::SeqCst), 4);
     assert_eq!(
         states(&ledger, "e2"),
-        ["judging1", "judged", "routed:delivered", "settled"]
+        [
+            "judging1",
+            "judged",
+            "routed:delivered",
+            "settled",
+            "ack:true"
+        ]
     );
     // e1: 100ms backoff, then 10s cooldown before attempt 3 (the probe).
     assert!(started.elapsed() >= Duration::from_secs(10));
