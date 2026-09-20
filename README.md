@@ -35,8 +35,11 @@ Thresholds are policy, not model: changing them never needs a new judgment.
 * **Boundaries**: `Judge` and `Ledger` are traits; consumers are plain
   `futures::Stream`s fed by bounded channels, so a slow consumer applies
   backpressure all the way back to the input stream.
-* **Adapter** `jev` (feature, on by default): `JevJudge` over HTTPS. The only
-  module that does network IO.
+* **Protocol** `jev::SystemOne`: Jev's request/response protocol as a trait.
+  `JevJudge<P>` makes any implementation a `Judge`. `jev::http::HttpSystemOne`
+  (feature `jev`, on by default) is the HTTPS implementation and the only
+  network code; a gateway, a compatible vendor or a test double implements
+  the trait directly.
 
 ## Streaming semantics
 

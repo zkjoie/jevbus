@@ -1,12 +1,25 @@
-//! Adapter: [`Judge`] over TypeSafe AI's Jev HTTP API.
+//! Jev: TypeSafe AI's System One protocol, as a trait.
 //!
-//! This is the only module that performs network IO. The wire format lives in
-//! [`wire`] and is converted to the crate's [`crate::question`] vocabulary at
-//! this boundary.
+//! ```text
+//! class SystemOne p where
+//!   ask :: p -> Request -> IO (Either JudgeError Response)
+//!
+//! newtype JevJudge p = JevJudge { protocol :: p, model :: Model }
+//! instance SystemOne p => Judge (JevJudge p)
+//! ```
+//!
+//! [`SystemOne`] is the protocol: a typed-question request in, a typed-answer
+//! response out, in the shape defined by [`wire`]. [`JevJudge`] turns any
+//! [`SystemOne`] into a [`Judge`] by encoding the crate's questions and
+//! decoding the answers. The reference implementation, [`http::HttpSystemOne`],
+//! speaks to TypeSafe's HTTPS API and is the only part that needs a network
+//! stack; a gateway, a proxy, another vendor that speaks the same protocol,
+//! or a test double implements [`SystemOne`] directly and needs none of it.
 
 pub mod wire;
 
-use std::fmt;
+#[cfg(feature = "jev")]
+pub mod http;
 
 use async_trait::async_trait;
 
@@ -14,135 +27,124 @@ use crate::event::Payload;
 use crate::judge::{Judge, JudgeError};
 use crate::question::{AnswerSet, QuestionSet};
 
-/// Default System One endpoint.
-pub const DEFAULT_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 /// Default model alias.
 pub const DEFAULT_MODEL: &str = "jev-latest";
-/// Environment variable read by [`JevJudge::from_env`].
-pub const KEY_ENV: &str = "JEV_KEY";
 
-/// A Jev API key.
-///
-/// Not `Clone`: the key is a capability, and each holder is a deliberate
-/// choice. `Debug` redacts the value.
-pub struct ApiKey(String);
+/// Something that answers a System One request.
+#[async_trait]
+pub trait SystemOne: Send + Sync {
+    /// Sends `request` and returns the decoded response body.
+    ///
+    /// Transport failures map to [`JudgeError::Unavailable`], refusals to
+    /// [`JudgeError::Rejected`], and an undecodable body to
+    /// [`JudgeError::MalformedReply`].
+    async fn ask(&self, request: &wire::Request<'_>) -> Result<wire::Response, JudgeError>;
+}
 
-impl ApiKey {
-    /// Validates that `key` is non-empty.
-    pub fn new(key: impl Into<String>) -> Result<Self, JevConfigError> {
-        let key = key.into();
-        if key.is_empty() {
-            Err(JevConfigError::EmptyKey)
-        } else {
-            Ok(ApiKey(key))
+#[async_trait]
+impl<T: SystemOne + ?Sized> SystemOne for &T {
+    async fn ask(&self, request: &wire::Request<'_>) -> Result<wire::Response, JudgeError> {
+        (**self).ask(request).await
+    }
+}
+
+/// A [`Judge`] over any [`SystemOne`] protocol implementation.
+#[derive(Debug)]
+pub struct JevJudge<P> {
+    protocol: P,
+    model: String,
+}
+
+impl<P: SystemOne> JevJudge<P> {
+    /// Judges through `protocol` with [`DEFAULT_MODEL`].
+    pub fn over(protocol: P) -> Self {
+        JevJudge {
+            protocol,
+            model: DEFAULT_MODEL.to_owned(),
         }
     }
-}
 
-impl fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ApiKey(<redacted>)")
-    }
-}
-
-/// Why a [`JevJudge`] could not be built.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum JevConfigError {
-    /// The key variable is not set.
-    #[error("environment variable {var} is not set")]
-    MissingKey {
-        /// The variable name.
-        var: &'static str,
-    },
-    /// The key is empty.
-    #[error("api key is empty")]
-    EmptyKey,
-    /// The HTTP client could not be constructed.
-    #[error("http client: {reason}")]
-    Client {
-        /// Detail from the client library.
-        reason: String,
-    },
-}
-
-/// A [`Judge`] backed by the Jev API.
-#[derive(Debug)]
-pub struct JevJudge {
-    client: reqwest::Client,
-    endpoint: String,
-    model: String,
-    key: ApiKey,
-}
-
-impl JevJudge {
-    /// Builds a judge against [`DEFAULT_ENDPOINT`] and [`DEFAULT_MODEL`].
-    pub fn new(key: ApiKey) -> Result<Self, JevConfigError> {
-        let client = reqwest::Client::builder()
-            .build()
-            .map_err(|e| JevConfigError::Client {
-                reason: e.to_string(),
-            })?;
-        Ok(JevJudge {
-            client,
-            endpoint: DEFAULT_ENDPOINT.to_owned(),
-            model: DEFAULT_MODEL.to_owned(),
-            key,
-        })
-    }
-
-    /// Reads the key from [`KEY_ENV`].
-    pub fn from_env() -> Result<Self, JevConfigError> {
-        let key =
-            std::env::var(KEY_ENV).map_err(|_| JevConfigError::MissingKey { var: KEY_ENV })?;
-        Self::new(ApiKey::new(key)?)
-    }
-
-    /// Overrides the endpoint, for proxies such as LiteLLM.
-    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.endpoint = endpoint.into();
-        self
-    }
-
-    /// Overrides the model alias.
+    /// Overrides the model alias sent in every request.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
+
+    /// The protocol implementation.
+    pub fn protocol(&self) -> &P {
+        &self.protocol
+    }
+
+    /// The model alias.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
 }
 
 #[async_trait]
-impl Judge for JevJudge {
+impl<P: SystemOne> Judge for JevJudge<P> {
     async fn judge(
         &self,
         payload: &Payload,
         questions: &QuestionSet,
     ) -> Result<AnswerSet, JudgeError> {
         let request = wire::encode(&self.model, payload, questions);
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .bearer_auth(&self.key.0)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| JudgeError::Unavailable {
-                reason: e.to_string(),
-            })?;
-        let status = response.status();
-        if !status.is_success() {
-            let message = response.text().await.unwrap_or_default();
-            return Err(JudgeError::Rejected {
-                status: status.as_u16(),
-                message,
-            });
+        let response = self.protocol.ask(&request).await?;
+        wire::decode(response)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::question::{Answer, Question, QuestionName};
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    /// A protocol double that records the request and replays a fixed body.
+    struct Scripted {
+        seen: Mutex<Vec<serde_json::Value>>,
+        body: serde_json::Value,
+    }
+
+    #[async_trait]
+    impl SystemOne for Scripted {
+        async fn ask(&self, request: &wire::Request<'_>) -> Result<wire::Response, JudgeError> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(request).unwrap());
+            serde_json::from_value(self.body.clone()).map_err(|e| JudgeError::MalformedReply {
+                detail: e.to_string(),
+            })
         }
-        let body: wire::Response =
-            response
-                .json()
-                .await
-                .map_err(|e| JudgeError::MalformedReply {
-                    detail: e.to_string(),
-                })?;
-        wire::decode(body)
+    }
+
+    #[tokio::test]
+    async fn a_judge_over_a_protocol_double_needs_no_network() {
+        let protocol = Scripted {
+            seen: Mutex::new(Vec::new()),
+            body: json!({ "answers": { "billing": { "type": "noul", "noul": 0.9 } } }),
+        };
+        let judge = JevJudge::over(&protocol).with_model("jev-test");
+        let questions = QuestionSet::from_iter([(
+            QuestionName::new("billing").unwrap(),
+            Question::Noul {
+                instructions: "billing?".into(),
+            },
+        )]);
+        let answers = judge
+            .judge(&Payload::new("charged twice"), &questions)
+            .await
+            .unwrap();
+        assert!(matches!(
+            answers.get(&QuestionName::new("billing").unwrap()),
+            Some(Answer::Noul { .. })
+        ));
+        let seen = protocol.seen.lock().unwrap();
+        let first = seen.first().cloned().unwrap_or_default();
+        assert_eq!(first.pointer("/model"), Some(&json!("jev-test")));
+        assert_eq!(first.pointer("/state"), Some(&json!("charged twice")));
     }
 }
