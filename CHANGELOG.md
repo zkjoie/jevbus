@@ -8,6 +8,11 @@ All notable changes to this crate are documented here. The format follows
 
 ### Added
 
+- Answer cache: `Cached<J, C>` judge decorator, `Cache` trait for external
+  backends, in-process `MemoryLru`, `Ttl` (default 24 h), `CacheKey` digest of
+  payload and question set, hit/miss/fault `CacheStats`.
+- `Clock` time boundary with `SystemClock` and `TokioClock`; `Answer`,
+  `AnswerSet` and `QuestionName` are now `serde` (de)serializable.
 - `merge` example: bursts of messages from the same user are merged before
   judgment, and the ledger shows the lineage of the merged event.
 

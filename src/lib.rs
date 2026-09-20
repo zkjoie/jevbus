@@ -21,6 +21,14 @@
 //! into one [`Event`] whose [`Event::parts`] records its lineage. The bus
 //! writes that lineage to the ledger as a `Composed` row.
 //!
+//! # Caching answers
+//!
+//! [`Cached`] wraps any [`Judge`] and consults a [`Cache`] before calling it.
+//! The key is a digest of the payload and the question set, so a changed
+//! subscription never hits a stale answer. [`MemoryLru`] is the in-process
+//! backend; the [`Cache`] trait admits external stores such as memcached.
+//! Entries expire after a [`Ttl`], one day by default.
+//!
 //! # Event state and an unavailable judge
 //!
 //! Every event walks the state machine in [`lifecycle`], whose phases are
@@ -45,6 +53,7 @@
 
 pub mod breaker;
 pub mod bus;
+pub mod cache;
 pub mod delivery;
 pub mod event;
 pub mod judge;
@@ -62,6 +71,7 @@ pub mod jev;
 
 pub use breaker::{Breaker, BreakerPolicy, Shared};
 pub use bus::{Bus, BusConfig, RunError, SubscribeError};
+pub use cache::{Cache, CacheError, CacheKey, CacheStats, Cached, MemoryLru, Ttl};
 pub use delivery::{DeadLetter, DeadLetters, Delivery, Receiver, Subscriber};
 pub use event::{EmptyId, Event, EventId, Payload};
 pub use judge::{Judge, JudgeError};
@@ -72,6 +82,6 @@ pub use probability::{Probability, ProbabilityError};
 pub use question::{Answer, AnswerSet, Question, QuestionName, QuestionSet};
 pub use routing::{Policy, RoutingError, Verdict};
 pub use subscription::{Disposition, Subscription, SubscriptionId, ThresholdError, Thresholds};
-pub use time::Sleeper;
+pub use time::{Clock, Sleeper, SystemClock};
 #[cfg(feature = "tokio")]
-pub use time::TokioSleeper;
+pub use time::{TokioClock, TokioSleeper};

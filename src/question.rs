@@ -7,14 +7,24 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize};
+
 use crate::event::EmptyId;
 use crate::probability::Probability;
 
 /// Name of a question within a [`QuestionSet`].
 ///
-/// Invariant: non-empty.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Invariant: non-empty. Deserialization goes through [`QuestionName::new`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
 pub struct QuestionName(String);
+
+impl<'de> Deserialize<'de> for QuestionName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        QuestionName::new(raw).map_err(serde::de::Error::custom)
+    }
+}
 
 impl QuestionName {
     /// Validates that `name` is non-empty.
@@ -109,7 +119,10 @@ impl FromIterator<(QuestionName, Question)> for QuestionSet {
 }
 
 /// A judge's answer to one [`Question`].
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Serializable so that a [`crate::cache::Cache`] backend can store it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Answer {
     /// Answer to [`Question::Noul`].
     Noul {
@@ -139,7 +152,8 @@ pub enum Answer {
 }
 
 /// Answers keyed by question name.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct AnswerSet(BTreeMap<QuestionName, Answer>);
 
 impl AnswerSet {
@@ -162,5 +176,35 @@ impl AnswerSet {
 impl FromIterator<(QuestionName, Answer)> for AnswerSet {
     fn from_iter<I: IntoIterator<Item = (QuestionName, Answer)>>(iter: I) -> Self {
         AnswerSet(iter.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Law: forall a, from_json(to_json(a)) == Ok(a).
+    #[test]
+    fn answer_set_round_trips_through_json() {
+        let Ok(name) = QuestionName::new("q") else {
+            return;
+        };
+        let set = AnswerSet::from_iter([(
+            name,
+            Answer::Choice {
+                choice: "a".into(),
+                probabilities: BTreeMap::from([("a".into(), Probability::ONE)]),
+                confidence: Some(Probability::ONE),
+            },
+        )]);
+        let json = serde_json::to_string(&set).unwrap_or_default();
+        let back: Result<AnswerSet, _> = serde_json::from_str(&json);
+        assert_eq!(back.ok(), Some(set));
+    }
+
+    #[test]
+    fn question_name_rejects_empty_text_when_deserialized() {
+        let bad: Result<QuestionName, _> = serde_json::from_str("\"\"");
+        assert!(bad.is_err());
     }
 }
