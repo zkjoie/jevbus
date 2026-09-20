@@ -1,0 +1,77 @@
+//! `jevbus`: a streaming event bus whose routing is decided by a probabilistic judge.
+//!
+//! # Model
+//!
+//! An [`Event`] carries a [`Payload`]. A [`Subscription`] is a plain-language
+//! description of the events a consumer wants, plus a [`Thresholds`] policy.
+//! The [`Bus`] consumes a `Stream<Item = Event>`. For every event it asks a
+//! [`Judge`] once, receives one [`Probability`] per subscription, and turns
+//! each into a [`Disposition`]: deliver, review, or drop. Deliveries flow out
+//! on per-subscription [`Subscriber`] streams; every outcome, including drops,
+//! is written to a [`Ledger`].
+//!
+//! Judge calls for consecutive events are pipelined with bounded concurrency,
+//! and output order equals input order.
+//!
+//! # Merging events
+//!
+//! [`merge::windowed`] is an asynchronous stage placed before the bus: it
+//! groups events by a key chosen by a [`Combiner`], holds each group for a
+//! time window or until it is full, and asks the combiner to fold the group
+//! into one [`Event`] whose [`Event::parts`] records its lineage. The bus
+//! writes that lineage to the ledger as a `Composed` row.
+//!
+//! # Event state and an unavailable judge
+//!
+//! Every event walks the state machine in [`lifecycle`], whose phases are
+//! types: `Tracked<Judging>`, `Tracked<Retrying>`, and so on, with
+//! transitions that consume one phase and return the next, or a nested
+//! `Either` (`Result`) where the outcome depends on the judge. Transient
+//! failures are retried with exponential backoff, permanent ones or an
+//! exhausted budget send the event to a [`DeadLetters`] stream, and each
+//! transition is written to the ledger. A [`breaker::Breaker`] shared by all
+//! in-flight calls opens after consecutive failures so that new events wait
+//! out the outage instead of burning their retry budgets. Time is an injected
+//! effect, [`Sleeper`].
+//!
+//! # Layers
+//!
+//! * Pure core: [`routing`] maps subscriptions to a [`QuestionSet`] and an
+//!   [`AnswerSet`] back to [`Verdict`]s. No IO, no time, no channels.
+//! * Boundaries: [`Judge`] and [`Ledger`] are traits; consumers are streams.
+//!   The [`Bus`] is generic over the judge and the ledger.
+//! * Adapters: [`jev`] implements [`Judge`] over TypeSafe AI's HTTP API and
+//!   is the only module that performs network IO.
+
+pub mod breaker;
+pub mod bus;
+pub mod delivery;
+pub mod event;
+pub mod judge;
+pub mod ledger;
+pub mod lifecycle;
+pub mod merge;
+pub mod probability;
+pub mod question;
+pub mod routing;
+pub mod subscription;
+pub mod time;
+
+#[cfg(feature = "jev")]
+pub mod jev;
+
+pub use breaker::{Breaker, BreakerPolicy, Shared};
+pub use bus::{Bus, BusConfig, RunError, SubscribeError};
+pub use delivery::{DeadLetter, DeadLetters, Delivery, Receiver, Subscriber};
+pub use event::{EmptyId, Event, EventId, Payload};
+pub use judge::{Judge, JudgeError};
+pub use ledger::{Entry, JudgeFailure, Ledger, LedgerError, MemoryLedger, Outcome, Record};
+pub use lifecycle::{Attempt, Attempts, EventState, Recorded, RetryPolicy, Tracked};
+pub use merge::{CombineError, Combiner, ConcatByKey, MergeFailure, WindowPolicy};
+pub use probability::{Probability, ProbabilityError};
+pub use question::{Answer, AnswerSet, Question, QuestionName, QuestionSet};
+pub use routing::{Policy, RoutingError, Verdict};
+pub use subscription::{Disposition, Subscription, SubscriptionId, ThresholdError, Thresholds};
+pub use time::Sleeper;
+#[cfg(feature = "tokio")]
+pub use time::TokioSleeper;
