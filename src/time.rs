@@ -4,7 +4,7 @@
 //! [`TokioSleeper`] is provided behind the `tokio` feature.
 
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::future::{self, BoxFuture, Either};
 
@@ -36,6 +36,42 @@ where
     match future::select(work, sleeper.sleep(limit)).await {
         Either::Left((output, _sleep)) => Some(output),
         Either::Right(((), _work)) => None,
+    }
+}
+
+/// A source of the current monotonic time.
+///
+/// Injected so that expiry can be tested on a paused clock.
+pub trait Clock: Send + Sync {
+    /// The current instant.
+    fn now(&self) -> Instant;
+}
+
+impl<T: Clock + ?Sized> Clock for &T {
+    fn now(&self) -> Instant {
+        (**self).now()
+    }
+}
+
+/// The operating system's monotonic clock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// A [`Clock`] that follows tokio's timer, including a paused one in tests.
+#[cfg(feature = "tokio")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokioClock;
+
+#[cfg(feature = "tokio")]
+impl Clock for TokioClock {
+    fn now(&self) -> Instant {
+        tokio::time::Instant::now().into_std()
     }
 }
 

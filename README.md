@@ -76,6 +76,27 @@ bus.run(merged).await?;
 * Nothing is lost: a group the combiner rejects comes out as a
   `MergeFailure` carrying every event it held.
 
+## Caching answers
+
+```rust
+use jevbus::{Cached, MemoryLru, SystemClock, Ttl};
+
+let cache = MemoryLru::new(NonZeroUsize::new(10_000)?, SystemClock);
+let judge = Cached::new(JevJudge::from_env()?, cache, Ttl::default());   // 24 h
+let mut bus = Bus::new(judge, ledger, TokioSleeper, BusConfig::default());
+```
+
+* `Cached<J, C>` is a `Judge`; the bus does not know it is there.
+* The key is a SHA-256 digest of the payload and the question set. The
+  question set is fixed for a run and changes with the subscriptions, so an
+  edited subscription never hits a stale answer.
+* Only successful answer sets are cached. Errors go through retry and the
+  breaker as usual.
+* A failing cache degrades to a miss; faults are counted in `CacheStats`
+  alongside hits and misses, never swallowed silently.
+* `Cache` is a trait: implement `get` and `put` over memcached, Redis or
+  anything else; `AnswerSet` serialises with `serde`.
+
 ## Event state and an unavailable judge
 
 Each event walks a state machine (`lifecycle`) whose phases are **types**,

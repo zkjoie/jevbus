@@ -28,8 +28,10 @@ tokio = ["dep:tokio"]
 [dependencies]
 async-trait = "0.1"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+lru = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
+sha2 = "0.11"
 thiserror = "2"
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", optional = true, default-features = false, features = ["time"] }
