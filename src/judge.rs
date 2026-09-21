@@ -1,6 +1,7 @@
 //! The judge boundary: something that answers typed questions about a payload.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::event::Payload;
 use crate::question::{AnswerSet, QuestionName, QuestionSet};
@@ -21,7 +22,8 @@ pub trait Judge: Send + Sync {
 }
 
 /// Why a judge could not produce answers.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum JudgeError {
     /// The judge could not be reached.
     #[error("judge unavailable: {reason}")]

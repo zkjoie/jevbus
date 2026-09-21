@@ -48,6 +48,13 @@ impl<T: Send + 'static, S: Sink<T> + ?Sized> Sink<T> for std::sync::Arc<S> {
 }
 
 #[async_trait]
+impl<T: Send + 'static, S: Sink<T> + ?Sized> Sink<T> for Box<S> {
+    async fn publish(&self, item: T) -> Result<(), SinkError> {
+        (**self).publish(item).await
+    }
+}
+
+#[async_trait]
 impl<T: Send + 'static, S: Sink<T> + ?Sized> Sink<T> for &S {
     async fn publish(&self, item: T) -> Result<(), SinkError> {
         (**self).publish(item).await

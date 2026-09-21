@@ -13,6 +13,18 @@
 //! Judge calls for consecutive events are pipelined with bounded concurrency,
 //! and output order equals input order.
 //!
+//! # Blueprints and chaining
+//!
+//! A bus is data plus handles. The data half is a [`Blueprint`]: the
+//! configuration, the subscriptions and which of them have review or
+//! dead-letter egress. It serialises with `serde`, and
+//! [`Bus::from_blueprint`] rebuilds a bus from it. Two buses chain through a
+//! [`link()`]: the upstream subscription's [`Sink`] hands each delivery to the
+//! downstream bus's [`Source`], and the upstream `publish` completes only
+//! when the downstream has acknowledged, so at-least-once holds end to end.
+//! [`Delivery`] and [`Event`] serialise too, which is the wire shape for a
+//! link across processes; the transport is not part of this crate.
+//!
 //! # Ingress and egress
 //!
 //! Events enter through a `Stream<Item = Event>`, a `Stream<Item =
@@ -62,6 +74,7 @@
 //!   trait, and [`jev::JevJudge`] makes any implementation a [`Judge`].
 //!   [`jev::http`] is the HTTPS implementation and the only network code.
 
+pub mod blueprint;
 pub mod breaker;
 pub mod bus;
 pub mod cache;
@@ -70,6 +83,7 @@ pub mod event;
 pub mod judge;
 pub mod ledger;
 pub mod lifecycle;
+pub mod link;
 pub mod merge;
 pub mod probability;
 pub mod question;
@@ -81,6 +95,7 @@ pub mod time;
 
 pub mod jev;
 
+pub use blueprint::{Blueprint, Handles, Role, RouteSpec};
 pub use breaker::{Breaker, BreakerPolicy, Shared};
 pub use bus::{Bus, BusConfig, RunError, SubscribeError};
 pub use cache::{Cache, CacheError, CacheKey, CacheStats, Cached, MemoryLru, Ttl};
@@ -89,6 +104,7 @@ pub use event::{EmptyId, Event, EventId, Payload};
 pub use judge::{Judge, JudgeError};
 pub use ledger::{Entry, JudgeFailure, Ledger, LedgerError, MemoryLedger, Outcome, Record};
 pub use lifecycle::{Attempt, Attempts, EventState, Recorded, RetryPolicy, Tracked};
+pub use link::{link, LinkAck, LinkSink, LinkSource};
 pub use merge::{CombineError, Combiner, ConcatByKey, MergeFailure, WindowPolicy};
 pub use probability::{Probability, ProbabilityError};
 pub use question::{Answer, AnswerSet, Question, QuestionName, QuestionSet};

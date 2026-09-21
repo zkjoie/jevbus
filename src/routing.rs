@@ -5,12 +5,15 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::probability::Probability;
 use crate::question::{Answer, AnswerSet, Question, QuestionName, QuestionSet};
 use crate::subscription::{Disposition, Subscription, SubscriptionId};
 
 /// How subscriptions compete for an event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Policy {
     /// One yes/no question per subscription. Any number may match.
     #[default]
@@ -24,7 +27,7 @@ pub enum Policy {
 pub const EXCLUSIVE_QUESTION: &str = "route";
 
 /// The routing decision for one subscription and one event.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Verdict {
     /// The subscription judged.
     pub subscription: SubscriptionId,
@@ -34,8 +37,28 @@ pub struct Verdict {
     pub disposition: Disposition,
 }
 
+/// The kind of answer a policy asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerKind {
+    /// A yes/no probability.
+    Noul,
+    /// One option among several.
+    Choice,
+}
+
+impl std::fmt::Display for AnswerKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AnswerKind::Noul => "noul",
+            AnswerKind::Choice => "choice",
+        })
+    }
+}
+
 /// Why an answer set could not be turned into verdicts.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RoutingError {
     /// The judge did not answer a question it was asked.
     #[error("no answer to question {question}")]
@@ -49,7 +72,7 @@ pub enum RoutingError {
         /// The question.
         question: QuestionName,
         /// The kind the policy asked for.
-        expected: &'static str,
+        expected: AnswerKind,
     },
     /// An exclusive answer omitted one subscription's option.
     #[error("exclusive answer has no probability for {subscription}")]
@@ -118,7 +141,7 @@ fn fan_out_verdict(sub: &Subscription, answers: &AnswerSet) -> Result<Verdict, R
         )),
         Some(_) => Err(RoutingError::WrongAnswerKind {
             question: question.clone(),
-            expected: "noul",
+            expected: AnswerKind::Noul,
         }),
         None => Err(RoutingError::MissingAnswer {
             question: question.clone(),
@@ -140,7 +163,7 @@ fn exclusive_verdicts<'a>(
         Some(_) => {
             return Err(RoutingError::WrongAnswerKind {
                 question,
-                expected: "choice",
+                expected: AnswerKind::Choice,
             })
         }
         None => return Err(RoutingError::MissingAnswer { question }),

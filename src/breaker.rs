@@ -23,10 +23,12 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 /// When to open, and for how long.
 ///
 /// `Copy` law: plain configuration values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BreakerPolicy {
     /// Consecutive failures that open the breaker.
     pub failure_threshold: NonZeroU32,

@@ -3,6 +3,7 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::event::EventId;
 use crate::judge::JudgeError;
@@ -32,7 +33,8 @@ pub enum Outcome {
 }
 
 /// Why an event received no verdicts at all.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
 pub enum JudgeFailure {
     /// The judge failed.
     #[error(transparent)]

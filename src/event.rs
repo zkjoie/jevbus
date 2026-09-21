@@ -2,11 +2,21 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize};
+
 /// Identity of an event.
 ///
-/// Invariant: non-empty.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Invariant: non-empty. Deserialization goes through [`EventId::new`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
 pub struct EventId(String);
+
+impl<'de> Deserialize<'de> for EventId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        EventId::new(raw).map_err(serde::de::Error::custom)
+    }
+}
 
 /// An identifier was empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -40,7 +50,8 @@ impl fmt::Display for EventId {
 ///
 /// The bus treats the payload as opaque text; producers serialise structured
 /// data before publishing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Payload(String);
 
 impl Payload {
@@ -61,10 +72,11 @@ impl Payload {
 /// `parts` is empty for an event that arrived from outside and lists the
 /// direct constituents of an event produced by merging. Nested lineage is
 /// recovered from the ledger's `Composed` rows of those parts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     id: EventId,
     payload: Payload,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     parts: Vec<EventId>,
 }
 

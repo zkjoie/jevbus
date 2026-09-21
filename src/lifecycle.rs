@@ -31,6 +31,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::event::Event;
 use crate::judge::JudgeError;
 use crate::ledger::{Entry, JudgeFailure, Record};
@@ -41,7 +43,8 @@ use crate::subscription::Subscription;
 /// A 1-based attempt counter.
 ///
 /// `Copy` law: a scalar with no identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Attempt(NonZeroU32);
 
 impl Attempt {
@@ -60,7 +63,8 @@ impl Attempt {
 }
 
 /// How many attempts an event may consume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Attempts {
     /// At most this many.
     Bounded(NonZeroU32),
@@ -82,7 +86,7 @@ impl Attempts {
 /// Retry and timeout policy for judge calls.
 ///
 /// `Copy` law: plain configuration values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetryPolicy {
     /// Attempt budget per event.
     pub attempts: Attempts,
