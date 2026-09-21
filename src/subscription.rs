@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize};
+
 use crate::event::EmptyId;
 use crate::probability::Probability;
 use crate::question::{Question, QuestionName};
@@ -9,7 +11,8 @@ use crate::question::{Question, QuestionName};
 /// Identity of a subscription. Doubles as the judge question name.
 ///
 /// Invariant: non-empty, carried by the inner [`QuestionName`].
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SubscriptionId(QuestionName);
 
 impl SubscriptionId {
@@ -38,7 +41,8 @@ impl fmt::Display for SubscriptionId {
 /// What the bus does with an event for one subscription.
 ///
 /// Ordered from least to most engaged: `Drop < Review < Deliver`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Disposition {
     /// Below both thresholds. Recorded, not delivered.
     Drop,
@@ -51,13 +55,26 @@ pub enum Disposition {
 /// Delivery policy. Thresholds are policy, not model: changing them never
 /// requires a new judgment.
 ///
-/// Invariant: `review <= deliver`.
+/// Invariant: `review <= deliver`. Deserialization goes through
+/// [`Thresholds::new`].
 ///
 /// `Copy` law: two probabilities, identity-free.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Thresholds {
     deliver: Probability,
     review: Probability,
+}
+
+impl<'de> Deserialize<'de> for Thresholds {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            deliver: Probability,
+            review: Probability,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Thresholds::new(raw.deliver, raw.review).map_err(serde::de::Error::custom)
+    }
 }
 
 /// The review threshold exceeded the deliver threshold.
@@ -111,11 +128,13 @@ impl Thresholds {
 }
 
 /// A plain-language subscription.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subscription {
     id: SubscriptionId,
     description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     examples: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     counter_examples: Vec<String>,
     thresholds: Thresholds,
 }

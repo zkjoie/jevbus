@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 
 use futures::channel::mpsc;
 use futures::Stream;
+use serde::{Deserialize, Serialize};
 
 use crate::event::Event;
 use crate::ledger::JudgeFailure;
@@ -16,10 +17,38 @@ use crate::routing::Verdict;
 ///
 /// The event is shared: one published event fans out to every subscriber that
 /// matched it, so the `Arc` is the fan-out itself, not a borrow-checker escape.
-#[derive(Debug, Clone)]
+///
+/// Serialises as `{ event, verdict }`; this is the shape a remote link
+/// carries between buses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "DeliveryWire", into = "DeliveryWire")]
 pub struct Delivery {
     event: Arc<Event>,
     verdict: Verdict,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeliveryWire {
+    event: Event,
+    verdict: Verdict,
+}
+
+impl From<DeliveryWire> for Delivery {
+    fn from(wire: DeliveryWire) -> Self {
+        Delivery {
+            event: Arc::new(wire.event),
+            verdict: wire.verdict,
+        }
+    }
+}
+
+impl From<Delivery> for DeliveryWire {
+    fn from(delivery: Delivery) -> Self {
+        DeliveryWire {
+            event: Arc::unwrap_or_clone(delivery.event),
+            verdict: delivery.verdict,
+        }
+    }
 }
 
 impl Delivery {
@@ -41,14 +70,49 @@ impl Delivery {
     pub fn into_parts(self) -> (Arc<Event>, Verdict) {
         (self.event, self.verdict)
     }
+
+    /// The event alone, as the input of a downstream bus.
+    pub fn into_event(self) -> Event {
+        Arc::unwrap_or_clone(self.event)
+    }
 }
 
 /// An event the bus gave up on, with the reason.
-#[derive(Debug, Clone)]
+///
+/// Serialises as `{ event, attempts, cause }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(from = "DeadLetterWire", into = "DeadLetterWire")]
 pub struct DeadLetter {
     event: Arc<Event>,
     attempts: Attempt,
     cause: JudgeFailure,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeadLetterWire {
+    event: Event,
+    attempts: Attempt,
+    cause: JudgeFailure,
+}
+
+impl From<DeadLetterWire> for DeadLetter {
+    fn from(wire: DeadLetterWire) -> Self {
+        DeadLetter {
+            event: Arc::new(wire.event),
+            attempts: wire.attempts,
+            cause: wire.cause,
+        }
+    }
+}
+
+impl From<DeadLetter> for DeadLetterWire {
+    fn from(letter: DeadLetter) -> Self {
+        DeadLetterWire {
+            event: Arc::unwrap_or_clone(letter.event),
+            attempts: letter.attempts,
+            cause: letter.cause,
+        }
+    }
 }
 
 impl DeadLetter {

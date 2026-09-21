@@ -51,6 +51,28 @@ Thresholds are policy, not model: changing them never needs a new judgment.
 * Dropping a `Subscriber` unsubscribes; later matches are recorded as
   `Outcome::Unsubscribed`.
 
+## Blueprints and chaining
+
+A bus is data plus handles. The data half is a `Blueprint`:
+
+```rust
+let blueprint = bus.blueprint();                      // serde: store, version, ship
+let (bus, handles) = Bus::from_blueprint(blueprint, judge, ledger, TokioSleeper)?;
+```
+
+Two buses chain through a `link`; the upstream `publish` completes only when
+the downstream has acknowledged, so at-least-once holds across the chain:
+
+```rust
+let (to_b, from_a) = link(64);
+bus_a.subscribe_to(billing, to_b)?;                   // A's deliveries feed B
+tokio::join!(bus_a.run_source(kafka), bus_b.run_source(from_a));
+```
+
+Across processes, carry the serialised `Delivery` over your transport and
+rebuild the same shape on the other side; the transport is not part of this
+crate.
+
 ## Ingress and egress
 
 The bus ships traits and an in-process channel, no broker code:

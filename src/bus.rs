@@ -5,7 +5,9 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use futures::{future, stream, Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 
+use crate::blueprint::{Blueprint, Handles, Role, RouteSpec};
 use crate::breaker::{BreakerPolicy, Shared, Transient};
 use crate::delivery::{self, DeadLetter, DeadLetters, Delivery, Subscriber};
 use crate::judge::{Judge, JudgeError};
@@ -19,7 +21,7 @@ use crate::subscription::{Disposition, Subscription, SubscriptionId};
 use crate::time::{self, Sleeper};
 
 /// Tunables for a [`Bus`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusConfig {
     /// How subscriptions compete for an event.
     pub policy: Policy,
@@ -196,6 +198,85 @@ impl<J: Judge, L: Ledger, S: Sleeper> Bus<J, L, S> {
     /// The registered subscriptions in registration order.
     pub fn subscriptions(&self) -> impl Iterator<Item = &Subscription> {
         self.routes.iter().map(|route| &route.subscription)
+    }
+
+    /// The data half of this bus: everything except the live handles.
+    ///
+    /// Law: `Bus::from_blueprint(bus.blueprint(), ..).0.blueprint() == bus.blueprint()`.
+    pub fn blueprint(&self) -> Blueprint {
+        Blueprint {
+            config: self.config,
+            routes: self
+                .routes
+                .iter()
+                .map(|route| RouteSpec {
+                    subscription: route.subscription.clone(),
+                    review: route.review.is_some(),
+                })
+                .collect(),
+            dead_letters: self.dead_letters.is_some(),
+        }
+    }
+
+    /// Rebuilds a bus from its blueprint with in-process channels for every
+    /// route and, if the blueprint had one, the dead-letter stream.
+    pub fn from_blueprint(
+        blueprint: Blueprint,
+        judge: J,
+        ledger: L,
+        sleeper: S,
+    ) -> Result<(Self, Handles), SubscribeError> {
+        let mut handles = Handles::default();
+        let capacity = blueprint.config.channel_capacity;
+        let wants_dead_letters = blueprint.dead_letters;
+        let mut bus = Self::from_blueprint_with(
+            blueprint,
+            judge,
+            ledger,
+            sleeper,
+            |id, role| {
+                let (sender, receiver) = delivery::channel(capacity);
+                match role {
+                    Role::Deliver => handles.subscribers.insert(id.clone(), receiver),
+                    Role::Review => handles.reviewers.insert(id.clone(), receiver),
+                };
+                Box::new(ChannelSink::new(sender))
+            },
+            None,
+        )?;
+        if wants_dead_letters {
+            handles.dead_letters = Some(bus.dead_letters()?);
+        }
+        Ok((bus, handles))
+    }
+
+    /// Rebuilds a bus from its blueprint, asking `egress` for the sink of
+    /// each route and role, and using `dead_letters` if given.
+    ///
+    /// `Blueprint -> (SubscriptionId -> Role -> Sink) -> Maybe Sink -> Bus`.
+    pub fn from_blueprint_with(
+        blueprint: Blueprint,
+        judge: J,
+        ledger: L,
+        sleeper: S,
+        mut egress: impl FnMut(&SubscriptionId, Role) -> Box<dyn Sink<Delivery>>,
+        dead_letters: Option<Box<dyn Sink<DeadLetter>>>,
+    ) -> Result<Self, SubscribeError> {
+        let mut bus = Self::new(judge, ledger, sleeper, blueprint.config);
+        for spec in blueprint.routes {
+            let id = spec.subscription.id().clone();
+            let deliver = egress(&id, Role::Deliver);
+            if spec.review {
+                let review = egress(&id, Role::Review);
+                bus.subscribe_with_review_to(spec.subscription, deliver, review)?;
+            } else {
+                bus.subscribe_to(spec.subscription, deliver)?;
+            }
+        }
+        if let Some(sink) = dead_letters {
+            bus.dead_letters = Some(sink);
+        }
+        Ok(bus)
     }
 
     fn check_unique(&self, id: &SubscriptionId) -> Result<(), SubscribeError> {

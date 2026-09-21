@@ -17,6 +17,14 @@ All notable changes to this crate are documented here. The format follows
 
 ### Added
 
+- `Blueprint`: the data half of a bus (config, routes, review and dead-letter
+  flags), `serde` round-trippable; `Bus::blueprint()`, `Bus::from_blueprint`
+  and `Bus::from_blueprint_with`. `Event`, `Subscription`, `Thresholds`,
+  `Verdict`, `Delivery`, `DeadLetter`, `BusConfig`, `RetryPolicy`,
+  `BreakerPolicy`, `JudgeError` and `RoutingError` serialise, with
+  invariants enforced on the way in.
+- `link`: chain two buses in process. The upstream `publish` completes only
+  after the downstream acknowledges, so at-least-once holds end to end.
 - Ingress and egress traits, no broker code: `Source` (pull-based, with a
   consume-once `Ack` handle in an `Envelope`), `Sink<T>` for deliveries and
   dead letters. `Bus::run_source`, `Bus::run_acked`, `subscribe_to`,
